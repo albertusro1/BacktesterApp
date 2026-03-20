@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -87,11 +89,37 @@ func handleUpload(c *fiber.Ctx) error {
 		})
 	}
 
-	// Note: Push 6 will implement the report parser logic here
+	// 6. Parse the HTM report
+	possiblePaths := []string{
+		filepath.Join("..", "data", "report.htm"),
+		filepath.Join("..", "data", "MT4", "report.htm"),
+		"report.htm",
+	}
+
+	var reportData map[string]string
+	var parseErr error
+	parsed := false
+	
+	for _, p := range possiblePaths {
+		reportData, parseErr = parseReport(p)
+		if parseErr == nil {
+			parsed = true
+			break
+		}
+	}
+
+	if !parsed {
+		log.Printf("Failed to find/parse report")
+		return c.JSON(fiber.Map{
+			"message": "Backtest executed, but report generating/parsing failed.",
+			"raw_output": string(output),
+		})
+	}
 
 	return c.JSON(fiber.Map{
-		"message": fmt.Sprintf("Successfully processed %s and %s", ex4File.Filename, csvFile.Filename),
-		"status":  "execution_complete_pending_parse",
+		"message": "Backtest completed successfully",
+		"status":  "success",
+		"results": reportData,
 		"raw_output": string(output),
 	})
 }
@@ -140,4 +168,44 @@ func runBacktest(iniPath string) ([]byte, error) {
 	
 	err = cmd.Run()
 	return out.Bytes(), err
+}
+
+func parseReport(reportPath string) (map[string]string, error) {
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		return nil, err
+	}
+
+	html := string(content)
+	results := make(map[string]string)
+
+	keys := []string{
+		"Total net profit",
+		"Gross profit",
+		"Gross loss",
+		"Profit factor",
+		"Expected payoff",
+		"Absolute drawdown",
+		"Maximal drawdown",
+		"Total trades",
+	}
+
+	for _, key := range keys {
+		val := extractValue(html, key)
+		if val != "" {
+			results[key] = val
+		}
+	}
+
+	return results, nil
+}
+
+func extractValue(html, key string) string {
+	re := regexp.MustCompile(fmt.Sprintf(`(?is)>\s*%s\s*<.*?<td[^>]*>(.*?)</td>`, regexp.QuoteMeta(key)))
+	match := re.FindStringSubmatch(html)
+	if len(match) > 1 {
+		cleanText := regexp.MustCompile(`<[^>]*>`).ReplaceAllString(match[1], "")
+		return strings.TrimSpace(cleanText)
+	}
+	return ""
 }
